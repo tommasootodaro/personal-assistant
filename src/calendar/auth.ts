@@ -1,27 +1,32 @@
-import { OAuth2Client } from "google-auth-library";
+import { google } from "googleapis";
 import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.js";
 
+// Usiamo la classe OAuth2 esposta da "googleapis" (non un pacchetto
+// "google-auth-library" separato) per evitare due copie della libreria
+// con versioni diverse, che TypeScript tratterebbe come tipi incompatibili.
+export type GoogleAuthClient = InstanceType<typeof google.auth.OAuth2>;
+
 const REDIRECT_URI = "http://localhost:3000/oauth2callback";
-const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
+const SCOPES = ["https://www.googleapis.com/auth/calendar"];
 const TOKEN_PATH = path.resolve(process.cwd(), "token.json");
 
-function createClient(): OAuth2Client {
+function createClient(): GoogleAuthClient {
   if (!config.googleClientId || !config.googleClientSecret) {
     throw new Error(
       "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET mancanti nel file .env."
     );
   }
-  return new OAuth2Client(
+  return new google.auth.OAuth2(
     config.googleClientId,
     config.googleClientSecret,
     REDIRECT_URI
   );
 }
 
-async function loadSavedToken(client: OAuth2Client): Promise<boolean> {
+async function loadSavedToken(client: GoogleAuthClient): Promise<boolean> {
   try {
     const raw = await readFile(TOKEN_PATH, "utf-8");
     client.setCredentials(JSON.parse(raw));
@@ -31,7 +36,7 @@ async function loadSavedToken(client: OAuth2Client): Promise<boolean> {
   }
 }
 
-async function runAuthFlow(client: OAuth2Client): Promise<void> {
+async function runAuthFlow(client: GoogleAuthClient): Promise<void> {
   const authUrl = client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
@@ -72,7 +77,7 @@ async function runAuthFlow(client: OAuth2Client): Promise<void> {
   console.log(`Token salvato in ${TOKEN_PATH}`);
 }
 
-export async function getAuthenticatedClient(): Promise<OAuth2Client> {
+export async function getAuthenticatedClient(): Promise<GoogleAuthClient> {
   const client = createClient();
 
   const hasToken = await loadSavedToken(client);

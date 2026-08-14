@@ -15,15 +15,35 @@ const QR_IMAGE_PATH = path.resolve(process.cwd(), "whatsapp-qr.png");
 
 const logger = pino({ level: "silent" });
 
+export interface WhatsAppContext {
+  sock: WASocket;
+  /** Manda un messaggio e lo marca come "proprio", cosi' non viene ripassato a onMessage. */
+  send: (jid: string, text: string) => Promise<void>;
+}
+
+export type MessageHandler = (
+  ctx: WhatsAppContext,
+  remoteJid: string,
+  text: string
+) => void | Promise<void>;
+
 export async function connectWhatsApp(
-  onOpen?: (sock: WASocket) => void
+  onOpen?: (ctx: WhatsAppContext) => void,
+  onMessage?: MessageHandler
 ): Promise<WASocket> {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+  const ownMessageIds = new Set<string>();
 
   const sock = makeWASocket({
     auth: state,
     logger,
   });
+
+  const send = async (jid: string, text: string) => {
+    const sent = await sock.sendMessage(jid, { text });
+    if (sent?.key?.id) ownMessageIds.add(sent.key.id);
+  };
+  const ctx: WhatsAppContext = { sock, send };
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -49,22 +69,29 @@ export async function connectWhatsApp(
       );
 
       if (!loggedOut) {
-        connectWhatsApp(onOpen);
+        connectWhatsApp(onOpen, onMessage);
       }
     } else if (connection === "open") {
       console.log("Connesso a WhatsApp.");
-      onOpen?.(sock);
+      onOpen?.(ctx);
     }
   });
 
   sock.ev.on("messages.upsert", ({ messages }) => {
     for (const msg of messages) {
       // In una chat con se stessi, WhatsApp marca come "fromMe" anche i messaggi
-      // scritti dal telefono: non possiamo usare questo flag per escludere i propri.
+      // scritti dal telefono: non possiamo usare questo flag per escludere i propri,
+      // quindi distinguiamo i messaggi del bot tramite ownMessageIds.
+      if (msg.key.id && ownMessageIds.has(msg.key.id)) continue;
+
       const text =
         msg.message?.conversation ?? msg.message?.extendedTextMessage?.text;
       if (!text) continue; // ignora ricevute/handshake senza testo
-      console.log(`Messaggio ricevuto (da ${msg.key.remoteJid}): ${text}`);
+      const remoteJid = msg.key.remoteJid;
+      console.log(`Messaggio ricevuto (da ${remoteJid}): ${text}`);
+      if (remoteJid) {
+        onMessage?.(ctx, remoteJid, text);
+      }
     }
   });
 
