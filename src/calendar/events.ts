@@ -1,5 +1,5 @@
 import { google } from "googleapis";
-import type { GoogleAuthClient } from "./auth.js";
+import type { GoogleAuthClient } from "../google/auth.js";
 import { resolveColorId, type EventColorName } from "./colors.js";
 
 export interface UpcomingEvent {

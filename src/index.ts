@@ -1,5 +1,5 @@
 import { connectWhatsApp, getSelfJid } from "./whatsapp/connection.js";
-import { getAuthenticatedClient } from "./calendar/auth.js";
+import { getAuthenticatedClient } from "./google/auth.js";
 import { createEvent } from "./calendar/events.js";
 import { parseEventFromText } from "./assistant/parseEvent.js";
 import {

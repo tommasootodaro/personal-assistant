@@ -10,7 +10,12 @@ import { config } from "../config.js";
 export type GoogleAuthClient = InstanceType<typeof google.auth.OAuth2>;
 
 const REDIRECT_URI = "http://localhost:3000/oauth2callback";
-const SCOPES = ["https://www.googleapis.com/auth/calendar"];
+// Un solo token per tutte le API Google usate (Calendar, Gmail), per non
+// dover rifare il consenso una volta per servizio.
+const SCOPES = [
+  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/gmail.readonly",
+];
 const TOKEN_PATH = path.resolve(process.cwd(), "token.json");
 
 function createClient(): GoogleAuthClient {
@@ -43,7 +48,7 @@ async function runAuthFlow(client: GoogleAuthClient): Promise<void> {
     scope: SCOPES,
   });
 
-  console.log("Apri questo link nel browser per autorizzare l'accesso al calendario:");
+  console.log("Apri questo link nel browser per autorizzare l'accesso a Calendar e Gmail:");
   console.log(authUrl);
 
   const code = await new Promise<string>((resolve, reject) => {

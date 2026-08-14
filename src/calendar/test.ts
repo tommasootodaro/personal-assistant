@@ -1,4 +1,4 @@
-import { getAuthenticatedClient } from "./auth.js";
+import { getAuthenticatedClient } from "../google/auth.js";
 import { listUpcomingEvents } from "./events.js";
 
 async function main() {

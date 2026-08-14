@@ -1,5 +1,5 @@
 import type { WhatsAppContext } from "../whatsapp/connection.js";
-import type { GoogleAuthClient } from "../calendar/auth.js";
+import type { GoogleAuthClient } from "../google/auth.js";
 import {
   listUpcomingEvents,
   deleteEvent,

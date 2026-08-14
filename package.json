@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "calendar:test": "tsx src/calendar/test.ts",
-    "vault:test": "tsx src/vault/test.ts"
+    "vault:test": "tsx src/vault/test.ts",
+    "email:test": "tsx src/email/test.ts"
   },
   "keywords": [],
   "author": "",
