@@ -1,0 +1,20 @@
+{
+  "name": "personal-assistant",
+  "version": "1.0.0",
+  "description": "Assistente personale via WhatsApp con accesso a Google Calendar e knowledge base Obsidian.",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}

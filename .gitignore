@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+*.log
+
+# Vault Obsidian: knowledge base personale, non fa parte del codice versionato
+/Personal Assistant/
+
+# Sessione di autenticazione WhatsApp (Baileys) - non va mai versionata
+auth/
+baileys_auth_info/
+
+# Token/credenziali Google OAuth
+credentials/
+token.json
