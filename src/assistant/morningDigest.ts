@@ -63,7 +63,7 @@ export async function buildMorningDigest(deps: MorningDigestDeps): Promise<strin
     getTldrDigestText(deps.googleAuth),
   ]);
 
-  return `Buongiorno! Ecco il riepilogo di oggi.\n\nIMPEGNI\n${formatCalendarSection(events)}\n\nTLDR\n${tldr}`;
+  return `Ecco il riepilogo di oggi.\n\nIMPEGNI\n${formatCalendarSection(events)}\n\nTLDR\n${tldr}`;
 }
 
 export async function sendMorningDigest(
