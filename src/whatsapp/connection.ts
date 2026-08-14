@@ -35,9 +35,6 @@ function silenceLibsignalNoise(method: "info" | "warn"): void {
   };
 }
 
-silenceLibsignalNoise("info");
-silenceLibsignalNoise("warn");
-
 export interface WhatsAppContext {
   sock: WASocket;
   /** Manda un messaggio e lo marca come "proprio", cosi' non viene ripassato a onMessage. */
@@ -50,12 +47,25 @@ export type MessageHandler = (
   text: string
 ) => void | Promise<void>;
 
+const INITIAL_RECONNECT_DELAY_MS = 1_000;
+const MAX_RECONNECT_DELAY_MS = 30_000;
+
 export async function connectWhatsApp(
   onOpen?: (ctx: WhatsAppContext) => void,
   onMessage?: MessageHandler
 ): Promise<void> {
+  // Chiamata qui (non a top-level del modulo) cosi' initFileLogging(), se
+  // gia' installata da index.ts, resta il layer piu' interno: le righe di
+  // rumore filtrate da questo wrapper non finiscono nel file di log.
+  silenceLibsignalNoise("info");
+  silenceLibsignalNoise("warn");
+
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
   const ownMessageIds = new Set<string>();
+  // Cresce esponenzialmente ad ogni riconnessione fallita consecutiva (fino al
+  // cap), per non martellare i server WhatsApp durante un'interruzione di rete
+  // prolungata; si resetta non appena la connessione torna "open".
+  let reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
 
   // Ogni riconnessione crea un nuovo WASocket con i propri listener: se non
   // smontiamo esplicitamente quelli del socket precedente, restano agganciati
@@ -101,9 +111,11 @@ export async function connectWhatsApp(
         sock.ev.removeAllListeners("creds.update");
 
         if (!loggedOut) {
-          start();
+          setTimeout(start, reconnectDelayMs);
+          reconnectDelayMs = Math.min(reconnectDelayMs * 2, MAX_RECONNECT_DELAY_MS);
         }
       } else if (connection === "open") {
+        reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
         console.log("Connesso a WhatsApp.");
         onOpen?.(ctx);
       }

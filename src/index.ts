@@ -1,3 +1,11 @@
+import { initFileLogging } from "./logger.js";
+
+// Deve girare prima di ogni altro import con effetti collaterali su console.*
+// (es. il filtro rumore libsignal in whatsapp/connection.ts), cosi' anche gli
+// errori vanno su file quando il processo gira in background senza terminale
+// (avvio al boot via Task Scheduler, Fase 6).
+initFileLogging();
+
 import { connectWhatsApp, getSelfJid, type WhatsAppContext } from "./whatsapp/connection.js";
 import { getAuthenticatedClient } from "./google/auth.js";
 import { handleMessage } from "./assistant/orchestrator.js";
@@ -11,6 +19,15 @@ import { config } from "./config.js";
 // per un problema transitorio da cui la libreria si riprenderebbe da sola.
 process.on("unhandledRejection", (err) => {
   console.error("Promise non gestita (probabile hiccup di connessione):", err);
+});
+
+// Un errore non intercettato lascia il processo in uno stato non affidabile:
+// logghiamo su file (per poterlo diagnosticare dopo, dato che gira senza
+// terminale) e usciamo lasciando che sia Task Scheduler a far ripartire il
+// servizio pulito, invece di continuare a girare in uno stato incerto.
+process.on("uncaughtException", (err) => {
+  console.error("Eccezione non gestita, il processo termina:", err);
+  process.exit(1);
 });
 
 async function main() {
