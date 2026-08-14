@@ -7,6 +7,7 @@ export interface EmailRules {
   lowPriority: string[];
   forcedNewsletter: string[];
   excludedNewsletter: string[];
+  detailedDigest: string[];
 }
 
 const RULES_FILE_NAME = "Email Rules.md";
@@ -17,6 +18,7 @@ const SECTION_HEADINGS: Record<keyof EmailRules, string> = {
   lowPriority: "priorità bassa",
   forcedNewsletter: "newsletter forzate",
   excludedNewsletter: "newsletter escluse",
+  detailedDigest: "digest dettagliato",
 };
 
 function extractListItems(content: string, heading: string): string[] {
@@ -47,7 +49,13 @@ export async function loadEmailRules(): Promise<EmailRules> {
   try {
     content = await fs.readFile(filePath, "utf-8");
   } catch {
-    return { highPriority: [], lowPriority: [], forcedNewsletter: [], excludedNewsletter: [] };
+    return {
+      highPriority: [],
+      lowPriority: [],
+      forcedNewsletter: [],
+      excludedNewsletter: [],
+      detailedDigest: [],
+    };
   }
 
   return {
@@ -55,6 +63,7 @@ export async function loadEmailRules(): Promise<EmailRules> {
     lowPriority: extractListItems(content, SECTION_HEADINGS.lowPriority),
     forcedNewsletter: extractListItems(content, SECTION_HEADINGS.forcedNewsletter),
     excludedNewsletter: extractListItems(content, SECTION_HEADINGS.excludedNewsletter),
+    detailedDigest: extractListItems(content, SECTION_HEADINGS.detailedDigest),
   };
 }
 

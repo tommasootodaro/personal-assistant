@@ -1,17 +1,10 @@
 import { getAuthenticatedClient } from "../google/auth.js";
 import { fetchRecentEmails } from "./gmail.js";
-import { loadEmailRules } from "./rules.js";
-import { classifyEmail, type Priority } from "./classify.js";
-import { summarizeEmails, type SummarizedEmail } from "./summarize.js";
+import { loadEmailRules, matchesRule } from "./rules.js";
+import { classifyEmail } from "./classify.js";
+import { summarizeDetailed } from "./summarize.js";
 
 const HOURS = 24;
-
-const GROUP_ORDER: Priority[] = ["alta", "normale", "bassa"];
-const GROUP_LABELS: Record<Priority, string> = {
-  alta: "Priorità alta",
-  normale: "Normale",
-  bassa: "Priorità bassa / newsletter",
-};
 
 async function main() {
   const auth = await getAuthenticatedClient();
@@ -24,22 +17,31 @@ async function main() {
   if (emails.length === 0) return;
 
   const classified = emails.map((e) => classifyEmail(e, rules));
-  const summarized = await summarizeEmails(classified);
 
-  const groups: Record<Priority, SummarizedEmail[]> = { alta: [], normale: [], bassa: [] };
-  for (const e of summarized) groups[e.priority].push(e);
+  // Solo i mittenti in "Digest dettagliato" vengono mandati a Claude: le altre
+  // mail restano fuori dal costo del riassunto, elencate soltanto per visibilità.
+  const detailed = classified.filter((e) => matchesRule(e.senderEmail, rules.detailedDigest));
+  const skipped = classified.filter((e) => !matchesRule(e.senderEmail, rules.detailedDigest));
 
-  for (const key of GROUP_ORDER) {
-    const items = groups[key];
-    if (items.length === 0) continue;
-
-    console.log(`=== ${GROUP_LABELS[key]} (${items.length}) ===`);
-    for (const e of items) {
-      const tag = e.isNewsletter ? " [newsletter]" : "";
-      console.log(`- ${e.senderName || e.senderEmail}${tag} — ${e.subject}`);
-      console.log(`  ${e.summary}`);
+  if (detailed.length > 0) {
+    const digests = await summarizeDetailed(detailed);
+    console.log(`=== Digest dettagliato (${digests.length}) ===`);
+    for (const d of digests) {
+      console.log(`\n${d.senderName || d.senderEmail} — ${d.subject}`);
+      for (const item of d.items) {
+        console.log(`  - ${item}`);
+      }
     }
     console.log();
+  } else {
+    console.log("Nessuna mail corrisponde alle regole di 'Digest dettagliato' (vedi Email Rules.md).\n");
+  }
+
+  if (skipped.length > 0) {
+    console.log(`=== Non elaborate, solo elenco (${skipped.length}) — nessuna chiamata a Claude ===`);
+    for (const e of skipped) {
+      console.log(`- ${e.senderName || e.senderEmail} — ${e.subject}`);
+    }
   }
 }
 
