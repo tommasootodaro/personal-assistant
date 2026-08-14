@@ -9,6 +9,7 @@ dist/
 # Sessione di autenticazione WhatsApp (Baileys) - non va mai versionata
 auth/
 baileys_auth_info/
+whatsapp-qr.png
 
 # Token/credenziali Google OAuth
 credentials/
