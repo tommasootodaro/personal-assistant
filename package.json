@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "calendar:test": "tsx src/calendar/test.ts",
     "vault:test": "tsx src/vault/test.ts",
-    "email:test": "tsx src/email/test.ts"
+    "email:test": "tsx src/email/test.ts",
+    "digest:test": "tsx src/assistant/digestTest.ts"
   },
   "keywords": [],
   "author": "",

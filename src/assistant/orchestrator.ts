@@ -5,10 +5,7 @@ import type { GoogleAuthClient } from "../google/auth.js";
 import { loadNotes, searchNotes } from "../vault/search.js";
 import { listUpcomingEvents, createEvent, deleteEvent } from "../calendar/events.js";
 import { EVENT_COLORS, type EventColorName } from "../calendar/colors.js";
-import { fetchRecentEmails } from "../email/gmail.js";
-import { loadEmailRules, matchesRule } from "../email/rules.js";
-import { classifyEmail } from "../email/classify.js";
-import { summarizeDetailed } from "../email/summarize.js";
+import { getTldrDigestText } from "../email/digest.js";
 
 const client = new Anthropic({ apiKey: config.anthropicApiKey });
 const COLOR_NAMES = Object.keys(EVENT_COLORS) as EventColorName[];
@@ -126,15 +123,8 @@ async function executeTool(name: string, input: Record<string, unknown>, deps: O
       return `Eliminati ${ids.length} eventi.`;
     }
 
-    case "get_tldr_digest": {
-      const rules = await loadEmailRules();
-      const emails = await fetchRecentEmails(deps.googleAuth, 24);
-      const classified = emails.map((e) => classifyEmail(e, rules));
-      const detailed = classified.filter((e) => matchesRule(e.senderEmail, rules.detailedDigest));
-      if (detailed.length === 0) return "Nessuna newsletter TLDR ricevuta nelle ultime 24 ore.";
-      const digests = await summarizeDetailed(detailed);
-      return digests.map((d) => `### ${d.subject}\n${d.items.map((i) => `- ${i}`).join("\n")}`).join("\n\n");
-    }
+    case "get_tldr_digest":
+      return getTldrDigestText(deps.googleAuth);
 
     default:
       return `Strumento sconosciuto: ${name}`;

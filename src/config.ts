@@ -12,4 +12,6 @@ export const config = {
   obsidianVaultPath: process.env.OBSIDIAN_VAULT_PATH ?? "",
   googleClientId: process.env.GOOGLE_CLIENT_ID ?? "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+  /** Orario "HH:MM" (fuso Europe/Rome) di invio del digest mattutino proattivo. */
+  morningDigestTime: process.env.MORNING_DIGEST_TIME ?? "07:30",
 };
