@@ -1,61 +1,30 @@
 import { connectWhatsApp, getSelfJid } from "./whatsapp/connection.js";
 import { getAuthenticatedClient } from "./google/auth.js";
-import { createEvent } from "./calendar/events.js";
-import { parseEventFromText } from "./assistant/parseEvent.js";
-import {
-  sendEventList,
-  trySelectEvents,
-  confirmDeletion,
-  hasPendingDeletion,
-} from "./assistant/eventDeletion.js";
+import { handleMessage } from "./assistant/orchestrator.js";
 
-const SHOW_EVENTS_TRIGGERS = ["i miei eventi", "mostrami i miei eventi", "i miei impegni"];
-const CONFIRM_WORDS = ["conferma", "si", "sì", "ok"];
+// Baileys a volte rigetta una promise internamente (es. invio fallito durante
+// un hiccup di connessione) senza che il nostro codice possa intercettarla
+// con un try/catch: senza questo handler, Node terminerebbe l'intero processo
+// per un problema transitorio da cui la libreria si riprenderebbe da sola.
+process.on("unhandledRejection", (err) => {
+  console.error("Promise non gestita (probabile hiccup di connessione):", err);
+});
 
 async function main() {
-  console.log("Personal Assistant: autenticazione Google Calendar...");
-  const calendarAuth = await getAuthenticatedClient();
-  console.log("Google Calendar autenticato.");
+  console.log("Personal Assistant: autenticazione Google (Calendar + Gmail)...");
+  const googleAuth = await getAuthenticatedClient();
+  console.log("Google autenticato.");
 
   console.log("Personal Assistant: avvio connessione WhatsApp...");
 
   await connectWhatsApp(
-    async (ctx) => {
-      const selfJid = getSelfJid(ctx.sock);
-      await ctx.send(
-        selfJid,
-        'Assistente collegato. Scrivimi un impegno (es. "domani alle 15 dentista") per aggiungerlo al calendario, oppure "i miei eventi" per vederli ed eventualmente eliminarli.'
-      );
+    (ctx) => {
+      // Solo log in terminale: niente messaggio su WhatsApp ad ogni (ri)connessione.
+      console.log(`Assistente pronto (${getSelfJid(ctx.sock)}).`);
     },
     async (ctx, remoteJid, text) => {
-      const normalized = text.trim().toLowerCase();
-
       try {
-        if (CONFIRM_WORDS.includes(normalized) && hasPendingDeletion()) {
-          await confirmDeletion(ctx, calendarAuth, remoteJid);
-          return;
-        }
-
-        if (SHOW_EVENTS_TRIGGERS.some((trigger) => normalized.includes(trigger))) {
-          await sendEventList(ctx, calendarAuth, remoteJid);
-          return;
-        }
-
-        if (await trySelectEvents(ctx, remoteJid, text)) {
-          return;
-        }
-
-        const result = await parseEventFromText(text);
-
-        if (result.type === "event") {
-          const created = await createEvent(calendarAuth, result.event);
-          await ctx.send(
-            remoteJid,
-            `Evento creato: "${result.event.title}" (${result.event.start} - ${result.event.end}).\n${created.htmlLink}`
-          );
-        } else {
-          await ctx.send(remoteJid, result.message);
-        }
+        await handleMessage(ctx, remoteJid, text, { googleAuth });
       } catch (err) {
         console.error("Errore nella gestione del messaggio:", err);
         await ctx.send(remoteJid, "Si e' verificato un errore, riprova.");
