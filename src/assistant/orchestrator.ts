@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import type { WhatsAppContext } from "../whatsapp/connection.js";
 import type { GoogleAuthClient } from "../google/auth.js";
 import { loadNotes, searchNotes } from "../vault/search.js";
+import { saveIdea, IDEA_CATEGORIES, type IdeaCategory } from "../vault/ideas.js";
 import { listUpcomingEvents, createEvent, deleteEvent } from "../calendar/events.js";
 import { EVENT_COLORS, type EventColorName } from "../calendar/colors.js";
 import { getTldrDigestText } from "../email/digest.js";
@@ -69,18 +70,43 @@ const TOOLS: Anthropic.Tool[] = [
     description: "Recupera e riassume, articolo per articolo, le newsletter TLDR ricevute nelle ultime 24 ore.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
+  {
+    name: "save_idea",
+    description:
+      "Salva un'idea o un pensiero al volo come nota singola nel vault Obsidian (dentro 'Idee/<categoria>/'), aggiungendola anche all'indice 'Idee/Inbox.md'. Usalo quando l'utente vuole segnarsi/appuntarsi qualcosa (es. 'segnati questa idea:', 'appuntami che...'). NON usarlo per eventi con data/ora (usa create_calendar_event) ne' per domande.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Titolo breve (3-6 parole) dell'idea, usato anche come nome del file della nota.",
+        },
+        category: {
+          type: "string",
+          enum: [...IDEA_CATEGORIES],
+          description: "Macro-categoria dell'idea, per organizzare il vault in sottocartelle. Usa 'Altro' se nessuna calza bene.",
+        },
+        text: {
+          type: "string",
+          description: "Il testo dell'idea, cosi' come l'ha espressa l'utente (puoi ripulirlo leggermente ma senza alterarne il senso).",
+        },
+      },
+      required: ["title", "category", "text"],
+    },
+  },
 ];
 
 function systemPrompt(): string {
   const nowIso = new Date().toISOString();
   return `Sei l'assistente personale dell'utente su WhatsApp. Data e ora attuali: ${nowIso} (fuso orario Europe/Rome). Rispondi sempre in italiano, in modo diretto e conciso: sei su WhatsApp, evita formattazione elaborata o markdown pesante.
 
-Hai strumenti per: cercare nel vault Obsidian (la sua knowledge base personale), leggere/creare/eliminare eventi sul Google Calendar, e ottenere il digest delle newsletter TLDR.
+Hai strumenti per: cercare nel vault Obsidian (la sua knowledge base personale), leggere/creare/eliminare eventi sul Google Calendar, ottenere il digest delle newsletter TLDR, e salvare rapidamente idee/appunti nel vault.
 
 Regole importanti:
 - Per eliminare eventi: prima chiama list_calendar_events e mostra la lista pertinente all'utente, chiedendo quali eliminare. Chiama delete_calendar_events SOLO dopo che l'utente ha confermato esplicitamente in un messaggio (il suo, non il tuo). Non eliminare mai eventi senza conferma esplicita.
 - Se una richiesta e' ambigua (es. data/ora mancante per un evento), fai una domanda di chiarimento invece di indovinare.
-- Se una ricerca nel vault non trova nulla di pertinente, dillo chiaramente invece di inventare contenuti.`;
+- Se una ricerca nel vault non trova nulla di pertinente, dillo chiaramente invece di inventare contenuti.
+- Se l'utente vuole segnarsi un'idea o un pensiero (senza data/ora specifica), usa save_idea. Se invece descrive qualcosa da fare in un momento preciso, e' un evento calendario (create_calendar_event).`;
 }
 
 export interface OrchestratorDeps {
@@ -125,6 +151,20 @@ async function executeTool(name: string, input: Record<string, unknown>, deps: O
 
     case "get_tldr_digest":
       return getTldrDigestText(deps.googleAuth);
+
+    case "save_idea": {
+      const text = String(input.text ?? "").trim();
+      if (!text) return "Nessun testo fornito per l'idea.";
+      const category = (IDEA_CATEGORIES as readonly string[]).includes(String(input.category))
+        ? (input.category as IdeaCategory)
+        : "Altro";
+      await saveIdea(config.obsidianVaultPath, {
+        title: String(input.title ?? "Idea").trim() || "Idea",
+        category,
+        text,
+      });
+      return `Idea salvata in Idee/${category}/.`;
+    }
 
     default:
       return `Strumento sconosciuto: ${name}`;
