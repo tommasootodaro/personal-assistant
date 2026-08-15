@@ -10,6 +10,7 @@ import { connectWhatsApp, getSelfJid, type WhatsAppContext } from "./whatsapp/co
 import { getAuthenticatedClient } from "./google/auth.js";
 import { handleMessage } from "./assistant/orchestrator.js";
 import { sendMorningDigest } from "./assistant/morningDigest.js";
+import { sendEventReminder } from "./assistant/eventReminder.js";
 import { scheduleDaily } from "./scheduler.js";
 import { config } from "./config.js";
 
@@ -42,6 +43,7 @@ async function main() {
   // dal socket attivo invece che da uno chiuso catturato al momento della schedulazione.
   let currentCtx: WhatsAppContext | null = null;
   let morningDigestScheduled = false;
+  let eventReminderScheduled = false;
 
   await connectWhatsApp(
     (ctx) => {
@@ -58,6 +60,17 @@ async function main() {
           await sendMorningDigest(currentCtx, getSelfJid(currentCtx.sock), { googleAuth });
         });
         console.log(`Digest mattutino schedulato ogni giorno alle ${config.morningDigestTime}.`);
+      }
+
+      if (!eventReminderScheduled) {
+        eventReminderScheduled = true;
+        const [hour, minute] = config.eventReminderTime.split(":").map(Number);
+        scheduleDaily(hour, minute, async () => {
+          if (!currentCtx) return;
+          console.log("Invio promemoria impegni...");
+          await sendEventReminder(currentCtx, getSelfJid(currentCtx.sock), { googleAuth });
+        });
+        console.log(`Promemoria impegni schedulato ogni giorno alle ${config.eventReminderTime}.`);
       }
     },
     async (ctx, remoteJid, text) => {

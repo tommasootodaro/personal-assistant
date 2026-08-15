@@ -10,7 +10,8 @@
     "calendar:test": "tsx src/calendar/test.ts",
     "vault:test": "tsx src/vault/test.ts",
     "email:test": "tsx src/email/test.ts",
-    "digest:test": "tsx src/assistant/digestTest.ts"
+    "digest:test": "tsx src/assistant/digestTest.ts",
+    "reminder:test": "tsx src/assistant/eventReminderTest.ts"
   },
   "keywords": [],
   "author": "",

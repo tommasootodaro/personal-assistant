@@ -14,4 +14,6 @@ export const config = {
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   /** Orario "HH:MM" (fuso Europe/Rome) di invio del digest mattutino proattivo. */
   morningDigestTime: process.env.MORNING_DIGEST_TIME ?? "07:30",
+  /** Orario "HH:MM" (fuso Europe/Rome) del promemoria mattutino sugli impegni. */
+  eventReminderTime: process.env.EVENT_REMINDER_TIME ?? "07:30",
 };
