@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import type { WhatsAppContext } from "../whatsapp/connection.js";
 import type { GoogleAuthClient } from "../google/auth.js";
 import { loadNotes, searchNotes } from "../vault/search.js";
-import { saveIdea, IDEA_CATEGORIES, type IdeaCategory } from "../vault/ideas.js";
+import { saveIdea, IDEA_CATEGORIES, IDEA_TYPES, type IdeaCategory, type IdeaType } from "../vault/ideas.js";
 import { listUpcomingEvents, createEvent, deleteEvent } from "../calendar/events.js";
 import { EVENT_COLORS, type EventColorName } from "../calendar/colors.js";
 import { getTldrDigestText } from "../email/digest.js";
@@ -86,12 +86,18 @@ const TOOLS: Anthropic.Tool[] = [
           enum: [...IDEA_CATEGORIES],
           description: "Macro-categoria dell'idea, per organizzare il vault in sottocartelle. Usa 'Altro' se nessuna calza bene.",
         },
+        type: {
+          type: "string",
+          enum: [...IDEA_TYPES],
+          description:
+            "'startup' se l'idea descrive un potenziale prodotto/servizio/business su cui si potrebbe costruire un'azienda; 'spunto' se e' un pensiero, appunto o miglioramento piu' casuale, non pensato come business.",
+        },
         text: {
           type: "string",
           description: "Il testo dell'idea, cosi' come l'ha espressa l'utente (puoi ripulirlo leggermente ma senza alterarne il senso).",
         },
       },
-      required: ["title", "category", "text"],
+      required: ["title", "category", "type", "text"],
     },
   },
 ];
@@ -158,12 +164,16 @@ async function executeTool(name: string, input: Record<string, unknown>, deps: O
       const category = (IDEA_CATEGORIES as readonly string[]).includes(String(input.category))
         ? (input.category as IdeaCategory)
         : "Altro";
+      const type = (IDEA_TYPES as readonly string[]).includes(String(input.type))
+        ? (input.type as IdeaType)
+        : "spunto";
       await saveIdea(config.obsidianVaultPath, {
         title: String(input.title ?? "Idea").trim() || "Idea",
         category,
+        type,
         text,
       });
-      return `Idea salvata in Idee/${category}/.`;
+      return `Idea salvata in Idee/${category}/ (${type}).`;
     }
 
     default:
