@@ -2,6 +2,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   jidNormalizedUser,
+  areJidsSameUser,
 } from "baileys";
 import type { WASocket } from "baileys";
 import { Boom } from "@hapi/boom";
@@ -132,10 +133,28 @@ export async function connectWhatsApp(
           msg.message?.conversation ?? msg.message?.extendedTextMessage?.text;
         if (!text) continue; // ignora ricevute/handshake senza testo
         const remoteJid = msg.key.remoteJid;
-        console.log(`Messaggio ricevuto (da ${remoteJid}): ${text}`);
-        if (remoteJid) {
-          onMessage?.(ctx, remoteJid, text);
+        if (!remoteJid) continue;
+
+        // L'assistente e' pensato per rispondere solo nella chat "con se stessi".
+        // WhatsApp sta migrando verso identificativi "LID" (es. 123...@lid) al
+        // posto del numero di telefono classico (@s.whatsapp.net): un messaggio
+        // nella propria chat puo' arrivare sotto uno qualsiasi dei due formati
+        // (sock.user.id vs sock.user.lid, numeri diversi per lo stesso account),
+        // quindi si confronta con entrambi - stessa logica usata internamente da
+        // Baileys per il proprio rilevamento "fromMe".
+        const me = sock.user;
+        const isSelfChat =
+          !!me &&
+          (areJidsSameUser(remoteJid, me.id) ||
+            (!!me.lid && areJidsSameUser(remoteJid, me.lid)));
+
+        if (!isSelfChat) {
+          console.log(`Messaggio ignorato (chat diversa dalla propria: ${remoteJid})`);
+          continue;
         }
+
+        console.log(`Messaggio ricevuto (da ${remoteJid}): ${text}`);
+        onMessage?.(ctx, remoteJid, text);
       }
     });
   }
