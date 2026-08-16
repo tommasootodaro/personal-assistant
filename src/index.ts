@@ -58,7 +58,7 @@ async function main() {
           if (!currentCtx) return;
           console.log("Invio digest mattutino...");
           await sendMorningDigest(currentCtx, getSelfJid(currentCtx.sock), { googleAuth });
-        });
+        }, "morningDigest");
         console.log(`Digest mattutino schedulato ogni giorno alle ${config.morningDigestTime}.`);
       }
 
@@ -69,7 +69,7 @@ async function main() {
           if (!currentCtx) return;
           console.log("Invio promemoria impegni...");
           await sendEventReminder(currentCtx, getSelfJid(currentCtx.sock), { googleAuth });
-        });
+        }, "eventReminder");
         console.log(`Promemoria impegni schedulato ogni giorno alle ${config.eventReminderTime}.`);
       }
     },

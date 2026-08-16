@@ -208,7 +208,29 @@ function compactOldToolResults(messages: History, keepFromIndex: number): Histor
   });
 }
 
-export async function handleMessage(
+// connectWhatsApp() invoca onMessage per ogni messaggio senza attendere che il
+// precedente sia stato gestito: se l'utente manda due messaggi ravvicinati (es.
+// una richiesta e poi la conferma, prima che la prima risposta sia pronta) le
+// due chiamate partirebbero in parallelo e leggerebbero entrambe la stessa
+// `histories.get(jid)` di partenza, perdendo il turno intermedio (es. la lista
+// di eventi appena mostrata) invece di vederlo nella history. Questa coda
+// serializza le chiamate per jid così ogni messaggio vede sempre lo stato
+// lasciato dal precedente; un errore in un turno non blocca i successivi.
+const processingQueues = new Map<string, Promise<void>>();
+
+export function handleMessage(
+  ctx: WhatsAppContext,
+  jid: string,
+  text: string,
+  deps: OrchestratorDeps
+): Promise<void> {
+  const previousTail = processingQueues.get(jid) ?? Promise.resolve();
+  const thisCall = previousTail.catch(() => {}).then(() => processMessage(ctx, jid, text, deps));
+  processingQueues.set(jid, thisCall.catch(() => {}));
+  return thisCall;
+}
+
+async function processMessage(
   ctx: WhatsAppContext,
   jid: string,
   text: string,

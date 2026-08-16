@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 *.log
+logs/schedule-state.json
 
 # Vault Obsidian: knowledge base personale, non fa parte del codice versionato
 /Personal Assistant/
