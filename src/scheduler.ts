@@ -73,6 +73,33 @@ function todaysOccurrenceAlreadyPassed(hour: number, minute: number): boolean {
   return targetAsUtc <= nowAsUtc;
 }
 
+const RETRY_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 3000;
+
+/**
+ * Esegue `task` con qualche ritentativo ravvicinato in caso di errore, prima di
+ * arrendersi per la giornata. Pensato per errori di rete transitori (es. la
+ * connessione non ancora stabile subito dopo un risveglio dallo standby, vedi
+ * changelog 2026-08-17): senza retry, un singolo `ECONNRESET` durante il recupero
+ * same-day marcava il job come "tentato" per il resto della giornata pur non
+ * avendo mai realmente inviato nulla.
+ */
+async function runWithRetries(task: () => void | Promise<void>, jobId: string): Promise<void> {
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    try {
+      await task();
+      return;
+    } catch (err) {
+      if (attempt === RETRY_ATTEMPTS) {
+        console.error(`Errore nel job schedulato ("${jobId}") dopo ${RETRY_ATTEMPTS} tentativi, rimandato a domani:`, err);
+        return;
+      }
+      console.error(`Errore nel job schedulato ("${jobId}"), tentativo ${attempt}/${RETRY_ATTEMPTS}, ritento tra ${RETRY_DELAY_MS / 1000}s:`, err);
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    }
+  }
+}
+
 /**
  * Esegue `task` ogni giorno a hour:minute (fuso Europe/Rome). Ricalcola la prossima
  * occorrenza dopo ogni esecuzione (invece di un interval fisso a 24h), cosi' non
@@ -86,11 +113,7 @@ function todaysOccurrenceAlreadyPassed(hour: number, minute: number): boolean {
  */
 export function scheduleDaily(hour: number, minute: number, task: () => void | Promise<void>, jobId: string): void {
   const runAndReschedule = async () => {
-    try {
-      await task();
-    } catch (err) {
-      console.error(`Errore nel job schedulato ("${jobId}"):`, err);
-    }
+    await runWithRetries(task, jobId);
     markRanToday(jobId);
     scheduleDaily(hour, minute, task, jobId);
   };
