@@ -12,16 +12,18 @@ export interface UpcomingEvent {
 
 export async function listUpcomingEvents(
   auth: GoogleAuthClient,
-  days: number
+  days: number,
+  daysBack = 0
 ): Promise<UpcomingEvent[]> {
   const calendar = google.calendar({ version: "v3", auth });
 
   const now = new Date();
+  const since = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000);
   const until = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
 
   const { data } = await calendar.events.list({
     calendarId: "primary",
-    timeMin: now.toISOString(),
+    timeMin: since.toISOString(),
     timeMax: until.toISOString(),
     singleEvents: true,
     orderBy: "startTime",

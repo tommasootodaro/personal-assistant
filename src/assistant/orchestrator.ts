@@ -7,9 +7,16 @@ import { saveIdea, IDEA_CATEGORIES, IDEA_TYPES, type IdeaCategory, type IdeaType
 import { listUpcomingEvents, createEvent, deleteEvent } from "../calendar/events.js";
 import { EVENT_COLORS, type EventColorName } from "../calendar/colors.js";
 import { getTldrDigestText } from "../email/digest.js";
+import { requestCreditWidgetRefresh } from "../creditWidget.js";
 
 const client = new Anthropic({ apiKey: config.anthropicApiKey });
 const COLOR_NAMES = Object.keys(EVENT_COLORS) as EventColorName[];
+/**
+ * list_calendar_events guarda anche un po' indietro nel passato, non solo in
+ * avanti: senza questo, un evento di ieri (es. da spostare a domani) non
+ * comparirebbe nella lista e il bot non riuscirebbe a trovarne l'id.
+ */
+const CALENDAR_DAYS_BACK = 3;
 
 const TOOLS: Anthropic.Tool[] = [
   {
@@ -25,7 +32,7 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "list_calendar_events",
     description:
-      "Elenca gli eventi del calendario nei prossimi N giorni, con i relativi id (necessari per eliminarli in seguito).",
+      `Elenca gli eventi del calendario nei prossimi N giorni (e negli ultimi ${CALENDAR_DAYS_BACK} giorni, cosi' un evento appena passato resta trovabile per spostarlo o eliminarlo), con i relativi id (necessari per eliminarli in seguito).`,
     input_schema: {
       type: "object",
       properties: { days: { type: "number", description: "Quanti giorni in avanti guardare (default 14)" } },
@@ -130,8 +137,8 @@ async function executeTool(name: string, input: Record<string, unknown>, deps: O
 
     case "list_calendar_events": {
       const days = typeof input.days === "number" ? input.days : 14;
-      const events = await listUpcomingEvents(deps.googleAuth, days);
-      if (events.length === 0) return `Nessun evento nei prossimi ${days} giorni.`;
+      const events = await listUpcomingEvents(deps.googleAuth, days, CALENDAR_DAYS_BACK);
+      if (events.length === 0) return `Nessun evento negli ultimi ${CALENDAR_DAYS_BACK} giorni ne' nei prossimi ${days}.`;
       return events
         .map((e) => `id=${e.id} | ${e.title} | ${e.start} -> ${e.end}${e.allDay ? " (tutto il giorno)" : ""}`)
         .join("\n");
@@ -239,46 +246,54 @@ async function processMessage(
   const priorHistoryLength = (histories.get(jid) ?? []).length;
   let messages: History = [...(histories.get(jid) ?? []), { role: "user", content: text }];
 
-  for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
-    const response = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1500,
-      system: systemPrompt(),
-      tools: TOOLS,
-      messages,
-    });
+  // Il refresh del widget crediti va segnalato una volta sola per messaggio,
+  // qualunque sia il modo in cui questa funzione esce (risposta diretta,
+  // troppi passaggi, o un errore che risale al chiamante): centralizzato qui
+  // invece che ripetuto ad ogni punto di uscita.
+  try {
+    for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+      const response = await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1500,
+        system: systemPrompt(),
+        tools: TOOLS,
+        messages,
+      });
 
-    messages = [...messages, { role: "assistant", content: response.content }];
+      messages = [...messages, { role: "assistant", content: response.content }];
 
-    const toolUses = response.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
-    );
+      const toolUses = response.content.filter(
+        (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+      );
 
-    if (toolUses.length === 0) {
-      const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
-      await ctx.send(jid, textBlock?.text ?? "Non ho una risposta al momento.");
-      const compacted = compactOldToolResults(messages, priorHistoryLength);
-      histories.set(jid, compacted.slice(-MAX_HISTORY_MESSAGES));
-      return;
-    }
-
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-    for (const toolUse of toolUses) {
-      let content: string;
-      let isError = false;
-      try {
-        content = await executeTool(toolUse.name, toolUse.input as Record<string, unknown>, deps);
-      } catch (err) {
-        content = `Errore nell'esecuzione dello strumento: ${err instanceof Error ? err.message : String(err)}`;
-        isError = true;
+      if (toolUses.length === 0) {
+        const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+        await ctx.send(jid, textBlock?.text ?? "Non ho una risposta al momento.");
+        const compacted = compactOldToolResults(messages, priorHistoryLength);
+        histories.set(jid, compacted.slice(-MAX_HISTORY_MESSAGES));
+        return;
       }
-      toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content, is_error: isError });
+
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      for (const toolUse of toolUses) {
+        let content: string;
+        let isError = false;
+        try {
+          content = await executeTool(toolUse.name, toolUse.input as Record<string, unknown>, deps);
+        } catch (err) {
+          content = `Errore nell'esecuzione dello strumento: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content, is_error: isError });
+      }
+
+      messages = [...messages, { role: "user", content: toolResults }];
     }
 
-    messages = [...messages, { role: "user", content: toolResults }];
+    await ctx.send(jid, "Non sono riuscito a completare la richiesta (troppi passaggi), riprova con un messaggio più semplice.");
+    const compacted = compactOldToolResults(messages, priorHistoryLength);
+    histories.set(jid, compacted.slice(-MAX_HISTORY_MESSAGES));
+  } finally {
+    requestCreditWidgetRefresh();
   }
-
-  await ctx.send(jid, "Non sono riuscito a completare la richiesta (troppi passaggi), riprova con un messaggio più semplice.");
-  const compacted = compactOldToolResults(messages, priorHistoryLength);
-  histories.set(jid, compacted.slice(-MAX_HISTORY_MESSAGES));
 }

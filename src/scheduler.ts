@@ -73,16 +73,20 @@ function todaysOccurrenceAlreadyPassed(hour: number, minute: number): boolean {
   return targetAsUtc <= nowAsUtc;
 }
 
-const RETRY_ATTEMPTS = 3;
-const RETRY_DELAY_MS = 3000;
+const RETRY_ATTEMPTS = 6;
+const RETRY_DELAY_MS = 20000;
 
 /**
- * Esegue `task` con qualche ritentativo ravvicinato in caso di errore, prima di
- * arrendersi per la giornata. Pensato per errori di rete transitori (es. la
- * connessione non ancora stabile subito dopo un risveglio dallo standby, vedi
- * changelog 2026-08-17): senza retry, un singolo `ECONNRESET` durante il recupero
+ * Esegue `task` con qualche ritentativo in caso di errore, prima di arrendersi
+ * per la giornata. Pensato per errori di rete transitori (es. la connessione
+ * non ancora stabile subito dopo un risveglio dallo standby, vedi changelog
+ * 2026-08-17): senza retry, un singolo `ECONNRESET` durante il recupero
  * same-day marcava il job come "tentato" per il resto della giornata pur non
  * avendo mai realmente inviato nulla.
+ * Finestra allargata a ~2 minuti (20s tra un tentativo e l'altro, invece di
+ * 3s): il primo giro (9s totali) non ha retto un blip di rete più lungo, es.
+ * al risveglio dallo standby con la connessione già caduta più volte prima
+ * (vedi changelog 2026-08-19).
  */
 async function runWithRetries(task: () => void | Promise<void>, jobId: string): Promise<void> {
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {

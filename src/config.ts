@@ -16,4 +16,8 @@ export const config = {
   morningDigestTime: process.env.MORNING_DIGEST_TIME ?? "07:30",
   /** Orario "HH:MM" (fuso Europe/Rome) del promemoria mattutino sugli impegni. */
   eventReminderTime: process.env.EVENT_REMINDER_TIME ?? "07:30",
+  /** File "richiesta di refresh" osservato dal widget dei crediti Anthropic sul desktop. */
+  creditWidgetTriggerPath:
+    process.env.CREDIT_WIDGET_TRIGGER_PATH ??
+    "C:\\Users\\tomma\\.claude\\scripts\\api-widget\\refresh-request.txt",
 };
