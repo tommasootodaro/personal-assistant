@@ -4,7 +4,7 @@ import type { WhatsAppContext } from "../whatsapp/connection.js";
 import type { GoogleAuthClient } from "../google/auth.js";
 import { loadNotes, searchNotes } from "../vault/search.js";
 import { saveIdea, IDEA_CATEGORIES, IDEA_TYPES, type IdeaCategory, type IdeaType } from "../vault/ideas.js";
-import { listUpcomingEvents, createEvent, deleteEvent } from "../calendar/events.js";
+import { listUpcomingEvents, createEvent, deleteEvent, updateEventDescription } from "../calendar/events.js";
 import { EVENT_COLORS, type EventColorName } from "../calendar/colors.js";
 import { getTldrDigestText } from "../email/digest.js";
 import { requestCreditWidgetRefresh } from "../creditWidget.js";
@@ -58,8 +58,25 @@ const TOOLS: Anthropic.Tool[] = [
             "Se all_day=false: data e ora di fine. Se all_day=true: ULTIMA data inclusa nell'evento (es. 2026-08-15 per un evento di un solo giorno).",
         },
         color: { type: "string", enum: COLOR_NAMES, description: "Solo se richiesto esplicitamente dall'utente." },
+        description: {
+          type: "string",
+          description: "Note dell'evento: testo libero, link, dettagli aggiuntivi. Opzionale.",
+        },
       },
       required: ["title", "all_day", "start", "end"],
+    },
+  },
+  {
+    name: "update_calendar_event_notes",
+    description:
+      "Aggiunge o sostituisce le note (descrizione) di un evento gia' esistente sul calendario, dato il suo id (usa list_calendar_events per trovarlo). Utile per incollare link o altre informazioni su un evento gia' creato.",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_id: { type: "string" },
+        description: { type: "string", description: "Nuovo testo delle note (sostituisce quello esistente)." },
+      },
+      required: ["event_id", "description"],
     },
   },
   {
@@ -113,7 +130,7 @@ function systemPrompt(): string {
   const nowIso = new Date().toISOString();
   return `Sei l'assistente personale dell'utente su WhatsApp. Data e ora attuali: ${nowIso} (fuso orario Europe/Rome). Rispondi sempre in italiano, in modo diretto e conciso: sei su WhatsApp, evita formattazione elaborata o markdown pesante.
 
-Hai strumenti per: cercare nel vault Obsidian (la sua knowledge base personale), leggere/creare/eliminare eventi sul Google Calendar, ottenere il digest delle newsletter TLDR, e salvare rapidamente idee/appunti nel vault.
+Hai strumenti per: cercare nel vault Obsidian (la sua knowledge base personale), leggere/creare/eliminare eventi sul Google Calendar (anche con note, link o altri dettagli), aggiungere o modificare le note di un evento gia' esistente, ottenere il digest delle newsletter TLDR, e salvare rapidamente idee/appunti nel vault.
 
 Regole importanti:
 - Per eliminare eventi: prima chiama list_calendar_events e mostra la lista pertinente all'utente, chiedendo quali eliminare. Chiama delete_calendar_events SOLO dopo che l'utente ha confermato esplicitamente in un messaggio (il suo, non il tuo). Non eliminare mai eventi senza conferma esplicita.
@@ -140,7 +157,10 @@ async function executeTool(name: string, input: Record<string, unknown>, deps: O
       const events = await listUpcomingEvents(deps.googleAuth, days, CALENDAR_DAYS_BACK);
       if (events.length === 0) return `Nessun evento negli ultimi ${CALENDAR_DAYS_BACK} giorni ne' nei prossimi ${days}.`;
       return events
-        .map((e) => `id=${e.id} | ${e.title} | ${e.start} -> ${e.end}${e.allDay ? " (tutto il giorno)" : ""}`)
+        .map((e) => {
+          const notes = e.description ? ` | note: ${e.description}` : "";
+          return `id=${e.id} | ${e.title} | ${e.start} -> ${e.end}${e.allDay ? " (tutto il giorno)" : ""}${notes}`;
+        })
         .join("\n");
     }
 
@@ -151,9 +171,17 @@ async function executeTool(name: string, input: Record<string, unknown>, deps: O
         start: String(input.start),
         end: String(input.end),
         color: input.color as EventColorName | undefined,
+        description: typeof input.description === "string" ? input.description : undefined,
         timeZone: "Europe/Rome",
       });
       return `Evento creato: ${created.htmlLink}`;
+    }
+
+    case "update_calendar_event_notes": {
+      const eventId = String(input.event_id ?? "");
+      if (!eventId) return "Nessun event_id fornito.";
+      await updateEventDescription(deps.googleAuth, eventId, String(input.description ?? ""));
+      return "Note aggiornate.";
     }
 
     case "delete_calendar_events": {

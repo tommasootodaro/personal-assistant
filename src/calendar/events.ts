@@ -8,6 +8,7 @@ export interface UpcomingEvent {
   start: string;
   end: string;
   allDay: boolean;
+  description?: string;
 }
 
 export async function listUpcomingEvents(
@@ -35,6 +36,7 @@ export async function listUpcomingEvents(
     start: event.start?.dateTime ?? event.start?.date ?? "",
     end: event.end?.dateTime ?? event.end?.date ?? "",
     allDay: Boolean(event.start?.date && !event.start?.dateTime),
+    description: event.description ?? undefined,
   }));
 }
 
@@ -53,6 +55,8 @@ export interface NewEvent {
   end: string;
   color?: EventColorName;
   timeZone?: string;
+  /** Note dell'evento: link, dettagli, testo libero. */
+  description?: string;
 }
 
 export interface CreatedEvent {
@@ -78,6 +82,7 @@ export async function createEvent(
     calendarId: "primary",
     requestBody: {
       summary: event.title,
+      description: event.description,
       colorId: resolveColorId(event.color),
       start: event.allDay
         ? { date: event.start }
@@ -89,6 +94,19 @@ export async function createEvent(
   });
 
   return { id: data.id ?? "", htmlLink: data.htmlLink ?? "" };
+}
+
+export async function updateEventDescription(
+  auth: GoogleAuthClient,
+  eventId: string,
+  description: string
+): Promise<void> {
+  const calendar = google.calendar({ version: "v3", auth });
+  await calendar.events.patch({
+    calendarId: "primary",
+    eventId,
+    requestBody: { description },
+  });
 }
 
 export async function deleteEvent(
