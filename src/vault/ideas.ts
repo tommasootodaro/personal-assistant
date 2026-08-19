@@ -65,6 +65,26 @@ async function appendLineIfMissing(filePath: string, header: string, line: strin
   await fs.writeFile(filePath, `${base}${line}\n`, "utf-8");
 }
 
+/** Rimuove `line` da `filePath` se presente (idempotente); non fa nulla se il file non esiste. */
+async function removeLineIfPresent(filePath: string, line: string): Promise<void> {
+  let existing: string;
+  try {
+    existing = await fs.readFile(filePath, "utf-8");
+  } catch {
+    return;
+  }
+  const trimmedTarget = line.trim();
+  const remaining = existing.split("\n").filter((l) => l.trim() !== trimmedTarget);
+  await fs.writeFile(filePath, remaining.join("\n"), "utf-8");
+}
+
+/** Estrae la categoria da un percorso relativo "Idee/<categoria>/<file>.md", o null se non rispetta questo formato. */
+function parseCategoryFromRelativePath(relativePath: string): IdeaCategory | null {
+  const parts = relativePath.split(/[\\/]/).filter(Boolean);
+  if (parts.length !== 3 || parts[0] !== IDEAS_DIR) return null;
+  return (IDEA_CATEGORIES as readonly string[]).includes(parts[1]) ? (parts[1] as IdeaCategory) : null;
+}
+
 /**
  * Crea una nota singola per l'idea in "Idee/<categoria>/" (frontmatter con
  * categoria/tipo/data + testo; il tag "tipo" pilota anche il colore in Graph
@@ -100,4 +120,36 @@ export async function saveIdea(vaultPath: string, idea: NewIdea): Promise<string
   await appendLineIfMissing(inboxPath, INBOX_HEADER, `- [[${categoryLink}]]`);
 
   return notePath;
+}
+
+/**
+ * Elimina la nota di un'idea, dato il suo percorso relativo al vault (es.
+ * "Idee/AI/2026-08-15 Titolo.md", nello stesso formato restituito da
+ * search_vault) e rimuove il link corrispondente dalla nota di categoria.
+ * Non tocca "Idee/Inbox.md" anche se la categoria resta senza idee: e' un
+ * indice di categorie, non di idee singole, quindi una categoria vuota non
+ * lascia link rotti.
+ *
+ * Per sicurezza (il percorso arriva da uno strumento esposto a Claude),
+ * accetta solo percorsi dentro "Idee/<categoria>/", cosi' questo tool non
+ * puo' essere usato per cancellare altre note del vault.
+ */
+export async function deleteIdea(vaultPath: string, relativeNotePath: string): Promise<void> {
+  const category = parseCategoryFromRelativePath(relativeNotePath);
+  if (!category) {
+    throw new Error(`Percorso non valido per un'idea: "${relativeNotePath}" (atteso "Idee/<categoria>/<file>.md").`);
+  }
+
+  const vaultRoot = path.resolve(vaultPath);
+  const absolutePath = path.resolve(vaultRoot, relativeNotePath);
+  if (absolutePath !== vaultRoot && !absolutePath.startsWith(vaultRoot + path.sep)) {
+    throw new Error("Percorso fuori dal vault.");
+  }
+
+  await fs.unlink(absolutePath);
+
+  const noteName = path.basename(relativeNotePath, ".md");
+  const categoryNotePath = path.join(vaultPath, IDEAS_DIR, `${category}.md`);
+  const ideaLink = `${IDEAS_DIR}/${category}/${noteName}`;
+  await removeLineIfPresent(categoryNotePath, `- [[${ideaLink}]]`);
 }

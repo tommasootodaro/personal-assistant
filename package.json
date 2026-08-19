@@ -11,7 +11,8 @@
     "vault:test": "tsx src/vault/test.ts",
     "email:test": "tsx src/email/test.ts",
     "digest:test": "tsx src/assistant/digestTest.ts",
-    "reminder:test": "tsx src/assistant/eventReminderTest.ts"
+    "reminder:test": "tsx src/assistant/eventReminderTest.ts",
+    "transcribe:test": "tsx src/whatsapp/transcribeTest.ts"
   },
   "keywords": [],
   "author": "",
@@ -27,8 +28,10 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
     "@hapi/boom": "^10.0.1",
+    "@huggingface/transformers": "^4.2.0",
     "baileys": "^7.0.0-rc14",
     "googleapis": "^174.0.1",
+    "ogg-opus-decoder": "^1.7.3",
     "pino": "^10.3.1",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0"

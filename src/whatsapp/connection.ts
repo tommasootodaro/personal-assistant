@@ -3,13 +3,15 @@ import makeWASocket, {
   DisconnectReason,
   jidNormalizedUser,
   areJidsSameUser,
+  downloadMediaMessage,
 } from "baileys";
-import type { WASocket } from "baileys";
+import type { WASocket, WAMessage } from "baileys";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import qrcodeTerminal from "qrcode-terminal";
 import QRCode from "qrcode";
 import path from "node:path";
+import { transcribeVoiceNote } from "./transcribe.js";
 
 const AUTH_FOLDER = "auth";
 const QR_IMAGE_PATH = path.resolve(process.cwd(), "whatsapp-qr.png");
@@ -34,6 +36,31 @@ function silenceLibsignalNoise(method: "info" | "warn"): void {
     }
     original(...args);
   };
+}
+
+// Parole/frasi che contano come conferma esplicita di una trascrizione vocale
+// (confronto esatto sull'intero messaggio normalizzato, non substring: "si"
+// e' una parola troppo comune in italiano per essere cercata dentro frasi
+// piu' lunghe senza generare falsi positivi).
+const CONFIRMATION_WORDS = new Set([
+  "si",
+  "sì",
+  "ok",
+  "okay",
+  "va bene",
+  "vabbene",
+  "conferma",
+  "confermo",
+  "procedi",
+  "vai",
+  "esatto",
+  "giusto",
+  "corretto",
+]);
+
+function isConfirmation(text: string): boolean {
+  const normalized = text.trim().toLowerCase().replace(/[.!?,]+$/, "");
+  return CONFIRMATION_WORDS.has(normalized);
 }
 
 export interface WhatsAppContext {
@@ -63,6 +90,10 @@ export async function connectWhatsApp(
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
   const ownMessageIds = new Set<string>();
+  // Trascrizione vocale in attesa di conferma dell'utente, per jid. Vive qui
+  // (non dentro start()) cosi' sopravvive a un'eventuale riconnessione nel
+  // mezzo di una conferma.
+  const pendingTranscriptions = new Map<string, string>();
   // Cresce esponenzialmente ad ogni riconnessione fallita consecutiva (fino al
   // cap), per non martellare i server WhatsApp durante un'interruzione di rete
   // prolungata; si resetta non appena la connessione torna "open".
@@ -122,39 +153,89 @@ export async function connectWhatsApp(
       }
     });
 
+    // Async e non attesa dal chiamante (fire-and-forget, coerente con onMessage
+    // qui sotto): l'eventuale trascrizione di un vocale non deve bloccare la
+    // ricezione degli altri messaggi in arrivo nello stesso batch.
+    async function handleIncomingMessage(msg: WAMessage): Promise<void> {
+      // In una chat con se stessi, WhatsApp marca come "fromMe" anche i messaggi
+      // scritti dal telefono: non possiamo usare questo flag per escludere i propri,
+      // quindi distinguiamo i messaggi del bot tramite ownMessageIds.
+      if (msg.key.id && ownMessageIds.has(msg.key.id)) return;
+
+      const remoteJid = msg.key.remoteJid;
+      if (!remoteJid) return;
+
+      // L'assistente e' pensato per rispondere solo nella chat "con se stessi".
+      // WhatsApp sta migrando verso identificativi "LID" (es. 123...@lid) al
+      // posto del numero di telefono classico (@s.whatsapp.net): un messaggio
+      // nella propria chat puo' arrivare sotto uno qualsiasi dei due formati
+      // (sock.user.id vs sock.user.lid, numeri diversi per lo stesso account),
+      // quindi si confronta con entrambi - stessa logica usata internamente da
+      // Baileys per il proprio rilevamento "fromMe".
+      const me = sock.user;
+      const isSelfChat =
+        !!me &&
+        (areJidsSameUser(remoteJid, me.id) ||
+          (!!me.lid && areJidsSameUser(remoteJid, me.lid)));
+
+      if (!isSelfChat) {
+        console.log(`Messaggio ignorato (chat diversa dalla propria: ${remoteJid})`);
+        return;
+      }
+
+      let text = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text;
+
+      if (!text && msg.message?.audioMessage) {
+        try {
+          console.log(`Vocale ricevuto (da ${remoteJid}), trascrizione in corso...`);
+          const audioBuffer = await downloadMediaMessage(msg, "buffer", {}, {
+            logger,
+            reuploadRequest: sock.updateMediaMessage,
+          });
+          const transcribed = await transcribeVoiceNote(audioBuffer);
+          if (!transcribed) {
+            console.log("Trascrizione vuota, vocale ignorato.");
+            return;
+          }
+          // Non si inoltra subito: la trascrizione puo' sbagliare, quindi si
+          // aspetta una conferma esplicita nel messaggio successivo (gestita
+          // piu' sotto) prima di passarla all'orchestratore.
+          pendingTranscriptions.set(remoteJid, transcribed);
+          await ctx.send(
+            remoteJid,
+            `🎤 Ho capito: "${transcribed}"\n\nConfermi? Rispondi "sì" per procedere, oppure scrivi cosa intendevi davvero.`
+          );
+        } catch (err) {
+          console.error("Errore nella trascrizione del vocale:", err);
+          await ctx.send(remoteJid, "Non sono riuscito a capire il vocale, puoi riprovare o scrivere un messaggio di testo?");
+        }
+        return;
+      }
+
+      if (!text) return; // ignora ricevute/handshake senza testo
+
+      const pending = pendingTranscriptions.get(remoteJid);
+      if (pending !== undefined) {
+        // Consumata subito, prima di ogni await successivo: due messaggi
+        // ravvicinati sullo stesso jid non possono cosi' leggere due volte lo
+        // stesso pending (stessa cautela della race condition gia' vista e
+        // risolta il 16/08 per la history dell'orchestratore).
+        pendingTranscriptions.delete(remoteJid);
+        if (isConfirmation(text)) {
+          text = pending;
+        }
+        // Altrimenti: la trascrizione in sospeso viene scartata e il nuovo
+        // messaggio (una correzione scritta dall'utente, o tutt'altro) prosegue
+        // normalmente qui sotto, come un messaggio qualunque.
+      }
+
+      console.log(`Messaggio ricevuto (da ${remoteJid}): ${text}`);
+      onMessage?.(ctx, remoteJid, text);
+    }
+
     sock.ev.on("messages.upsert", ({ messages }) => {
       for (const msg of messages) {
-        // In una chat con se stessi, WhatsApp marca come "fromMe" anche i messaggi
-        // scritti dal telefono: non possiamo usare questo flag per escludere i propri,
-        // quindi distinguiamo i messaggi del bot tramite ownMessageIds.
-        if (msg.key.id && ownMessageIds.has(msg.key.id)) continue;
-
-        const text =
-          msg.message?.conversation ?? msg.message?.extendedTextMessage?.text;
-        if (!text) continue; // ignora ricevute/handshake senza testo
-        const remoteJid = msg.key.remoteJid;
-        if (!remoteJid) continue;
-
-        // L'assistente e' pensato per rispondere solo nella chat "con se stessi".
-        // WhatsApp sta migrando verso identificativi "LID" (es. 123...@lid) al
-        // posto del numero di telefono classico (@s.whatsapp.net): un messaggio
-        // nella propria chat puo' arrivare sotto uno qualsiasi dei due formati
-        // (sock.user.id vs sock.user.lid, numeri diversi per lo stesso account),
-        // quindi si confronta con entrambi - stessa logica usata internamente da
-        // Baileys per il proprio rilevamento "fromMe".
-        const me = sock.user;
-        const isSelfChat =
-          !!me &&
-          (areJidsSameUser(remoteJid, me.id) ||
-            (!!me.lid && areJidsSameUser(remoteJid, me.lid)));
-
-        if (!isSelfChat) {
-          console.log(`Messaggio ignorato (chat diversa dalla propria: ${remoteJid})`);
-          continue;
-        }
-
-        console.log(`Messaggio ricevuto (da ${remoteJid}): ${text}`);
-        onMessage?.(ctx, remoteJid, text);
+        void handleIncomingMessage(msg);
       }
     });
   }

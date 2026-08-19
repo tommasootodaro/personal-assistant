@@ -15,3 +15,6 @@ whatsapp-qr.png
 # Token/credenziali Google OAuth
 credentials/
 token.json
+
+# Modello Whisper scaricato in locale per la trascrizione vocali (~500MB)
+models/

@@ -1,9 +1,10 @@
+import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config.js";
 import type { WhatsAppContext } from "../whatsapp/connection.js";
 import type { GoogleAuthClient } from "../google/auth.js";
 import { loadNotes, searchNotes } from "../vault/search.js";
-import { saveIdea, IDEA_CATEGORIES, IDEA_TYPES, type IdeaCategory, type IdeaType } from "../vault/ideas.js";
+import { saveIdea, deleteIdea, IDEA_CATEGORIES, IDEA_TYPES, type IdeaCategory, type IdeaType } from "../vault/ideas.js";
 import { listUpcomingEvents, createEvent, deleteEvent, updateEventDescription } from "../calendar/events.js";
 import { EVENT_COLORS, type EventColorName } from "../calendar/colors.js";
 import { getTldrDigestText } from "../email/digest.js";
@@ -22,7 +23,7 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "search_vault",
     description:
-      "Cerca nelle note del vault Obsidian (la knowledge base personale dell'utente) per parola chiave. Usalo quando l'utente chiede cosa sa o ha scritto su un argomento.",
+      "Cerca nelle note del vault Obsidian (la knowledge base personale dell'utente) per parola chiave. Usalo quando l'utente chiede cosa sa o ha scritto su un argomento, oppure per trovare un'idea da eliminare (vedi delete_ideas). Il risultato include il percorso relativo di ogni nota, da riusare tale e quale per delete_ideas.",
     input_schema: {
       type: "object",
       properties: { query: { type: "string", description: "Termini di ricerca" } },
@@ -124,16 +125,33 @@ const TOOLS: Anthropic.Tool[] = [
       required: ["title", "category", "type", "text"],
     },
   },
+  {
+    name: "delete_ideas",
+    description:
+      "Elimina una o piu' idee dal vault Obsidian, dato il loro percorso relativo (usa search_vault per trovarle, es. \"Idee/AI/2026-08-15 Titolo.md\"). USA QUESTO STRUMENTO SOLO DOPO che l'utente ha confermato esplicitamente quali idee eliminare (mostragli prima i risultati di search_vault e attendi la sua conferma nel messaggio successivo). Non eliminare mai idee senza conferma esplicita.",
+    input_schema: {
+      type: "object",
+      properties: {
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "Percorsi relativi al vault delle idee da eliminare, cosi' come restituiti da search_vault.",
+        },
+      },
+      required: ["paths"],
+    },
+  },
 ];
 
 function systemPrompt(): string {
   const nowIso = new Date().toISOString();
   return `Sei l'assistente personale dell'utente su WhatsApp. Data e ora attuali: ${nowIso} (fuso orario Europe/Rome). Rispondi sempre in italiano, in modo diretto e conciso: sei su WhatsApp, evita formattazione elaborata o markdown pesante.
 
-Hai strumenti per: cercare nel vault Obsidian (la sua knowledge base personale), leggere/creare/eliminare eventi sul Google Calendar (anche con note, link o altri dettagli), aggiungere o modificare le note di un evento gia' esistente, ottenere il digest delle newsletter TLDR, e salvare rapidamente idee/appunti nel vault.
+Hai strumenti per: cercare nel vault Obsidian (la sua knowledge base personale), leggere/creare/eliminare eventi sul Google Calendar (anche con note, link o altri dettagli), aggiungere o modificare le note di un evento gia' esistente, ottenere il digest delle newsletter TLDR, salvare rapidamente idee/appunti nel vault ed eliminarli.
 
 Regole importanti:
 - Per eliminare eventi: prima chiama list_calendar_events e mostra la lista pertinente all'utente, chiedendo quali eliminare. Chiama delete_calendar_events SOLO dopo che l'utente ha confermato esplicitamente in un messaggio (il suo, non il tuo). Non eliminare mai eventi senza conferma esplicita.
+- Per eliminare idee: prima chiama search_vault per trovare le idee pertinenti e mostrale all'utente con il loro percorso. Chiama delete_ideas SOLO dopo conferma esplicita in un messaggio successivo, con la stessa cautela usata per gli eventi calendario. Non eliminare mai idee senza conferma esplicita.
 - Se una richiesta e' ambigua (es. data/ora mancante per un evento), fai una domanda di chiarimento invece di indovinare.
 - Se una ricerca nel vault non trova nulla di pertinente, dillo chiaramente invece di inventare contenuti.
 - Se l'utente vuole segnarsi un'idea o un pensiero (senza data/ora specifica), usa save_idea. Se invece descrive qualcosa da fare in un momento preciso, e' un evento calendario (create_calendar_event).`;
@@ -149,7 +167,12 @@ async function executeTool(name: string, input: Record<string, unknown>, deps: O
       const notes = await loadNotes(config.obsidianVaultPath);
       const results = searchNotes(String(input.query ?? ""), notes);
       if (results.length === 0) return "Nessuna nota pertinente trovata.";
-      return results.map((r) => `### ${r.note.title}\n${r.excerpt}`).join("\n\n");
+      return results
+        .map((r) => {
+          const relativePath = path.relative(config.obsidianVaultPath, r.note.filePath).replace(/\\/g, "/");
+          return `### ${r.note.title} (${relativePath})\n${r.excerpt}`;
+        })
+        .join("\n\n");
     }
 
     case "list_calendar_events": {
@@ -209,6 +232,12 @@ async function executeTool(name: string, input: Record<string, unknown>, deps: O
         text,
       });
       return `Idea salvata in Idee/${category}/ (${type}).`;
+    }
+
+    case "delete_ideas": {
+      const paths = Array.isArray(input.paths) ? (input.paths as string[]) : [];
+      for (const p of paths) await deleteIdea(config.obsidianVaultPath, p);
+      return `Eliminate ${paths.length} idee.`;
     }
 
     default:
