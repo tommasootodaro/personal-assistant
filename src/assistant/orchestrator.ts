@@ -2,7 +2,7 @@ import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config.js";
 import type { WhatsAppContext } from "../whatsapp/connection.js";
-import type { GoogleAuthClient } from "../google/auth.js";
+import { isAuthExpiredError, type GoogleAuthClient } from "../google/auth.js";
 import { loadNotes, searchNotes } from "../vault/search.js";
 import { saveIdea, deleteIdea, IDEA_CATEGORIES, IDEA_TYPES, type IdeaCategory, type IdeaType } from "../vault/ideas.js";
 import { listUpcomingEvents, createEvent, deleteEvent, updateEventDescription } from "../calendar/events.js";
@@ -154,6 +154,7 @@ Regole importanti:
 - Per eliminare idee: prima chiama search_vault per trovare le idee pertinenti e mostrale all'utente con il loro percorso. Chiama delete_ideas SOLO dopo conferma esplicita in un messaggio successivo, con la stessa cautela usata per gli eventi calendario. Non eliminare mai idee senza conferma esplicita.
 - Se una richiesta e' ambigua (es. data/ora mancante per un evento), fai una domanda di chiarimento invece di indovinare.
 - Se una ricerca nel vault non trova nulla di pertinente, dillo chiaramente invece di inventare contenuti.
+- Se l'utente ti chiede di creare piu' eventi in un colpo solo, chiama create_calendar_event piu' volte nello stesso turno invece di uno per turno, e alla fine riepiloga quanti ne hai creati.
 - Se l'utente vuole segnarsi un'idea o un pensiero (senza data/ora specifica), usa save_idea. Se invece descrive qualcosa da fare in un momento preciso, e' un evento calendario (create_calendar_event).`;
 }
 
@@ -248,7 +249,12 @@ async function executeTool(name: string, input: Record<string, unknown>, deps: O
 type History = Anthropic.MessageParam[];
 const histories = new Map<string, History>();
 const MAX_HISTORY_MESSAGES = 20;
-const MAX_TOOL_TURNS = 6;
+// Una richiesta in blocco ("aggiungi tutte le scadenze del semestre") vale
+// facilmente 20-25 create_calendar_event. Con 1500 token di output il modello
+// veniva troncato a meta' di un tool_use, e con 6 turni finiva i giri prima di
+// aver creato tutti gli eventi: entrambi i limiti erano tarati su richieste da
+// uno o due eventi alla volta.
+const MAX_TOOL_TURNS = 12;
 const OMITTED_TOOL_RESULT_PLACEHOLDER =
   "[risultato omesso per contenere i costi — l'informazione rilevante e' gia' nella risposta testuale di quel turno]";
 
@@ -270,6 +276,34 @@ function compactOldToolResults(messages: History, keepFromIndex: number): Histor
     );
     return { ...message, content };
   });
+}
+
+/**
+ * Un turno con i tool aggiunge SEMPRE due messaggi in coppia: l'`assistant` che
+ * chiede il tool (`tool_use`) e lo `user` che ne riporta l'esito (`tool_result`).
+ * Un `slice(-N)` secco puo' tagliare esattamente in mezzo a quella coppia e
+ * lasciare in testa alla history dei `tool_result` orfani: l'API li rifiuta con
+ * 400 ("unexpected `tool_use_id` found in `tool_result` blocks"), e siccome la
+ * history rotta resta memorizzata, da quel momento OGNI messaggio successivo di
+ * quella chat fallisce allo stesso modo finche' il servizio non viene riavviato
+ * (causa reale del "Si e' verificato un errore, riprova." del 07/09/2026).
+ * Dopo il taglio scartiamo quindi dalla testa finche' il primo messaggio non e'
+ * un inizio di conversazione valido, cioe' uno `user` senza `tool_result`.
+ */
+function startsMidToolExchange(message: Anthropic.MessageParam): boolean {
+  if (message.role === "assistant") return true;
+  return (
+    Array.isArray(message.content) &&
+    message.content.some((block) => block.type === "tool_result")
+  );
+}
+
+export function trimHistory(messages: History): History {
+  let trimmed = messages.slice(-MAX_HISTORY_MESSAGES);
+  while (trimmed.length > 0 && startsMidToolExchange(trimmed[0]!)) {
+    trimmed = trimmed.slice(1);
+  }
+  return trimmed;
 }
 
 // connectWhatsApp() invoca onMessage per ogni messaggio senza attendere che il
@@ -294,7 +328,42 @@ export function handleMessage(
   return thisCall;
 }
 
+function isBadRequest(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { status?: unknown }).status === 400;
+}
+
 async function processMessage(
+  ctx: WhatsAppContext,
+  jid: string,
+  text: string,
+  deps: OrchestratorDeps
+): Promise<void> {
+  // Il refresh del widget crediti va segnalato una volta sola per messaggio,
+  // qualunque sia il modo in cui questa funzione esce (risposta diretta,
+  // troppi passaggi, o un errore che risale al chiamante): centralizzato qui
+  // invece che ripetuto ad ogni punto di uscita.
+  try {
+    try {
+      await runTurn(ctx, jid, text, deps);
+    } catch (err) {
+      // Rete di sicurezza per il caso descritto in trimHistory(): se la history
+      // salvata e' comunque diventata invalida, senza questo ramo resterebbe in
+      // memoria a far fallire con 400 ogni messaggio futuro di questa chat.
+      // Buttarla e riprovare fa perdere il contesto precedente, non l'assistente.
+      if (!isBadRequest(err) || !histories.has(jid)) throw err;
+      console.error(
+        `History non valida per ${jid}: la azzero e riprovo una volta.`,
+        err instanceof Error ? err.message : err
+      );
+      histories.delete(jid);
+      await runTurn(ctx, jid, text, deps);
+    }
+  } finally {
+    requestCreditWidgetRefresh();
+  }
+}
+
+async function runTurn(
   ctx: WhatsAppContext,
   jid: string,
   text: string,
@@ -303,54 +372,63 @@ async function processMessage(
   const priorHistoryLength = (histories.get(jid) ?? []).length;
   let messages: History = [...(histories.get(jid) ?? []), { role: "user", content: text }];
 
-  // Il refresh del widget crediti va segnalato una volta sola per messaggio,
-  // qualunque sia il modo in cui questa funzione esce (risposta diretta,
-  // troppi passaggi, o un errore che risale al chiamante): centralizzato qui
-  // invece che ripetuto ad ogni punto di uscita.
-  try {
-    for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
-      const response = await client.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 1500,
-        system: systemPrompt(),
-        tools: TOOLS,
-        messages,
-      });
+  for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+    const response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 8000,
+      system: systemPrompt(),
+      tools: TOOLS,
+      messages,
+    });
 
-      messages = [...messages, { role: "assistant", content: response.content }];
-
-      const toolUses = response.content.filter(
-        (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+    // Con stop_reason "max_tokens" l'ultimo blocco e' tagliato a meta'. Se e' un
+    // tool_use, l'SDK lo consegna comunque con l'input JSON incompleto: eseguirlo
+    // creerebbe un evento sbagliato (titolo mozzato, data mancante) invece di
+    // fallire. Ci fermiamo prima di appendere il turno troncato, cosi' la history
+    // salvata non resta con un tool_use privo del suo tool_result.
+    if (response.stop_reason === "max_tokens") {
+      await ctx.send(
+        jid,
+        "La richiesta e' troppo lunga per gestirla in un colpo solo: prova a spezzarla in due o tre messaggi."
       );
-
-      if (toolUses.length === 0) {
-        const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
-        await ctx.send(jid, textBlock?.text ?? "Non ho una risposta al momento.");
-        const compacted = compactOldToolResults(messages, priorHistoryLength);
-        histories.set(jid, compacted.slice(-MAX_HISTORY_MESSAGES));
-        return;
-      }
-
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
-      for (const toolUse of toolUses) {
-        let content: string;
-        let isError = false;
-        try {
-          content = await executeTool(toolUse.name, toolUse.input as Record<string, unknown>, deps);
-        } catch (err) {
-          content = `Errore nell'esecuzione dello strumento: ${err instanceof Error ? err.message : String(err)}`;
-          isError = true;
-        }
-        toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content, is_error: isError });
-      }
-
-      messages = [...messages, { role: "user", content: toolResults }];
+      histories.set(jid, trimHistory(compactOldToolResults(messages, priorHistoryLength)));
+      return;
     }
 
-    await ctx.send(jid, "Non sono riuscito a completare la richiesta (troppi passaggi), riprova con un messaggio più semplice.");
-    const compacted = compactOldToolResults(messages, priorHistoryLength);
-    histories.set(jid, compacted.slice(-MAX_HISTORY_MESSAGES));
-  } finally {
-    requestCreditWidgetRefresh();
+    messages = [...messages, { role: "assistant", content: response.content }];
+
+    const toolUses = response.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+    );
+
+    if (toolUses.length === 0) {
+      const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+      await ctx.send(jid, textBlock?.text ?? "Non ho una risposta al momento.");
+      histories.set(jid, trimHistory(compactOldToolResults(messages, priorHistoryLength)));
+      return;
+    }
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    for (const toolUse of toolUses) {
+      let content: string;
+      let isError = false;
+      try {
+        content = await executeTool(toolUse.name, toolUse.input as Record<string, unknown>, deps);
+      } catch (err) {
+        // Un "invalid_grant" secco non dice niente all'utente, e il modello lo
+        // parafrasava in un generico "non ci sono riuscito": la richiesta sembrava
+        // fallita a caso, quando invece serviva una sola azione ben precisa.
+        content = isAuthExpiredError(err)
+          ? "L'autorizzazione Google e' scaduta e va rinnovata a mano: nessun accesso a Calendar o Gmail finche' non viene rifatta. Dillo all'utente in modo esplicito e non riprovare con altri strumenti Google."
+          : `Errore nell'esecuzione dello strumento: ${err instanceof Error ? err.message : String(err)}`;
+        isError = true;
+      }
+      toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content, is_error: isError });
+    }
+
+    messages = [...messages, { role: "user", content: toolResults }];
   }
+
+  await ctx.send(jid, "Non sono riuscito a completare la richiesta (troppi passaggi), riprova con un messaggio più semplice.");
+  histories.set(jid, trimHistory(compactOldToolResults(messages, priorHistoryLength)));
 }

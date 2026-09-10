@@ -31,6 +31,58 @@ function createClient(): GoogleAuthClient {
   );
 }
 
+/**
+ * Distingue "il consenso e' morto, serve che l'utente riautorizzi" da un errore
+ * qualunque (rete assente, 500 di Google, quota). La distinzione conta perche'
+ * le due situazioni vogliono reazioni opposte: sul primo caso bisogna buttare il
+ * token e rifare il flusso di consenso, sul secondo bisogna tenerlo e riprovare.
+ *
+ * Il caso concreto che ha rotto il servizio dal 22/08/2026: il client OAuth e'
+ * in stato "Testing" sulla Google Cloud Console, e Google fa scadere i refresh
+ * token delle app in Testing dopo 7 giorni esatti.
+ */
+export function isAuthExpiredError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+
+  const { response, message } = err as {
+    response?: { data?: { error?: unknown } };
+    message?: unknown;
+  };
+
+  // Guardiamo il codice OAuth nel corpo della risposta, non lo status HTTP: un
+  // 400 arriva anche da una richiesta malformata o da parametri sbagliati, e
+  // trattarlo come consenso scaduto vorrebbe dire buttare via un refresh token
+  // ancora buono. GaxiosError riporta lo stesso codice anche in `message`, che
+  // usiamo come ripiego.
+  const fromBody = response?.data?.error;
+  const code = typeof fromBody === "string" ? fromBody : typeof message === "string" ? message : "";
+
+  // Solo "invalid_grant". Google lo usa per tutti i casi che si risolvono
+  // rifacendo il consenso (token scaduto per i 7 giorni delle app in Testing,
+  // consenso revocato a mano, password dell'account cambiata). Codici vicini
+  // come "invalid_client" o "unauthorized_client" indicano invece credenziali
+  // sbagliate nel .env: rifare il flusso OAuth non li aggiusterebbe, si
+  // entrerebbe solo in un ciclo di riautorizzazioni che falliscono uguale.
+  return code === "invalid_grant";
+}
+
+/**
+ * Google restituisce un access token nuovo ogni ora, ma il codice non lo
+ * salvava da nessuna parte: token.json restava fermo al primo rilascio e ad
+ * ogni riavvio si ripartiva da un access token gia' scaduto, sperando nel
+ * refresh. Persistiamo le credenziali aggiornate ad ogni refresh.
+ */
+function persistTokensOnRefresh(client: GoogleAuthClient): void {
+  client.on("tokens", () => {
+    // Salviamo client.credentials e non l'oggetto emesso dall'evento: ai
+    // refresh successivi Google NON rimanda il refresh_token, mentre
+    // client.credentials lo conserva. Scrivere l'evento grezzo lo cancellerebbe.
+    writeFile(TOKEN_PATH, JSON.stringify(client.credentials, null, 2)).catch((err) =>
+      console.error("Non sono riuscito a salvare il token Google aggiornato:", err)
+    );
+  });
+}
+
 async function loadSavedToken(client: GoogleAuthClient): Promise<boolean> {
   try {
     const raw = await readFile(TOKEN_PATH, "utf-8");
@@ -50,6 +102,7 @@ async function runAuthFlow(client: GoogleAuthClient): Promise<void> {
 
   console.log("Apri questo link nel browser per autorizzare l'accesso a Calendar e Gmail:");
   console.log(authUrl);
+  console.log("(il servizio resta fermo qui finche' non completi l'autorizzazione)");
 
   const code = await new Promise<string>((resolve, reject) => {
     const server = createServer((req, res) => {
@@ -80,13 +133,48 @@ async function runAuthFlow(client: GoogleAuthClient): Promise<void> {
   client.setCredentials(tokens);
   await writeFile(TOKEN_PATH, JSON.stringify(tokens, null, 2));
   console.log(`Token salvato in ${TOKEN_PATH}`);
+
+  // Google lo rimanda solo per i client in "Testing", e non e' dichiarato nei
+  // tipi di Credentials: e' proprio il campo che ci avrebbe fatto scoprire il
+  // problema settimane prima, quindi lo leggiamo e lo segnaliamo.
+  const refreshTtl = (tokens as { refresh_token_expires_in?: number }).refresh_token_expires_in;
+  if (refreshTtl) {
+    const days = Math.round(refreshTtl / 86400);
+    console.warn(
+      `ATTENZIONE: Google ha rilasciato un refresh token che scade tra ${days} giorni. ` +
+        `Succede quando il client OAuth e' in stato "Testing": pubblica l'app ` +
+        `("Publish app" nella schermata consenso OAuth della Google Cloud Console) ` +
+        `per non dover rifare il login ogni settimana.`
+    );
+  }
 }
 
 export async function getAuthenticatedClient(): Promise<GoogleAuthClient> {
   const client = createClient();
+  persistTokensOnRefresh(client);
 
-  const hasToken = await loadSavedToken(client);
-  if (!hasToken) {
+  if (!(await loadSavedToken(client))) {
+    await runAuthFlow(client);
+    return client;
+  }
+
+  // Un token su disco non e' detto sia ancora valido. Verifichiamolo subito,
+  // all'avvio: senza questo controllo un consenso scaduto si manifestava solo
+  // ore dopo, dentro un job schedulato o a meta' di una richiesta WhatsApp, e
+  // il servizio restava su a fallire in silenzio a tempo indeterminato.
+  try {
+    await client.getAccessToken();
+  } catch (err) {
+    if (!isAuthExpiredError(err)) {
+      // Rete giu' o Google momentaneamente indisponibile: il token e'
+      // probabilmente ancora buono, ributtarlo sarebbe un autogol.
+      console.error(
+        "Verifica del token Google non riuscita, procedo comunque con quello salvato:",
+        err instanceof Error ? err.message : err
+      );
+      return client;
+    }
+    console.error("Il consenso Google non e' piu' valido: serve una nuova autorizzazione.");
     await runAuthFlow(client);
   }
 
