@@ -1,5 +1,6 @@
 import process from "node:process";
 import path from "node:path";
+import os from "node:os";
 
 try {
   process.loadEnvFile(path.resolve(process.cwd(), ".env"));
@@ -19,5 +20,5 @@ export const config = {
   /** File "richiesta di refresh" osservato dal widget dei crediti Anthropic sul desktop. */
   creditWidgetTriggerPath:
     process.env.CREDIT_WIDGET_TRIGGER_PATH ??
-    "C:\\Users\\tomma\\.claude\\scripts\\api-widget\\refresh-request.txt",
+    path.join(os.homedir(), ".claude", "scripts", "api-widget", "refresh-request.txt"),
 };

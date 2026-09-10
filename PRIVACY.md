@@ -7,7 +7,8 @@ un assistente personale a uso privato: gira in locale sul PC del suo autore, che
 ne è anche l'unico utente. Non è un servizio offerto a terzi, non ha registrazione
 utenti e non ha un backend remoto.
 
-Contatto: tommasootodaro@gmail.com
+Per qualsiasi domanda si puo' aprire una issue nel repository:
+https://github.com/tommasootodaro/personal-assistant/issues
 
 ## Dati a cui l'applicazione accede
 
