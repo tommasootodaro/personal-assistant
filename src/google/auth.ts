@@ -149,13 +149,15 @@ async function runAuthFlow(client: GoogleAuthClient): Promise<void> {
   }
 }
 
-export async function getAuthenticatedClient(): Promise<GoogleAuthClient> {
-  const client = createClient();
-  persistTokensOnRefresh(client);
-
+/**
+ * Porta il client ad avere credenziali valide: usa il token salvato se regge
+ * ancora, altrimenti rifa' il consenso. Sta in una funzione separata perche' il
+ * listener che persiste i refresh va agganciato solo DOPO questa fase.
+ */
+async function establishCredentials(client: GoogleAuthClient): Promise<void> {
   if (!(await loadSavedToken(client))) {
     await runAuthFlow(client);
-    return client;
+    return;
   }
 
   // Un token su disco non e' detto sia ancora valido. Verifichiamolo subito,
@@ -172,11 +174,24 @@ export async function getAuthenticatedClient(): Promise<GoogleAuthClient> {
         "Verifica del token Google non riuscita, procedo comunque con quello salvato:",
         err instanceof Error ? err.message : err
       );
-      return client;
+      return;
     }
     console.error("Il consenso Google non e' piu' valido: serve una nuova autorizzazione.");
     await runAuthFlow(client);
   }
+}
 
+export async function getAuthenticatedClient(): Promise<GoogleAuthClient> {
+  const client = createClient();
+  await establishCredentials(client);
+
+  // Il listener si aggancia solo ORA, a credenziali gia' stabilite, e l'ordine
+  // qui e' sostanziale. Durante lo scambio del codice getToken() emette
+  // "tokens" PRIMA di aggiornare client.credentials: un listener gia' attivo
+  // scriveva su disco le credenziali VECCHIE, e quella scrittura asincrona
+  // correva con quella del token buono fatta da runAuthFlow arrivando dopo.
+  // Il consenso riusciva, il servizio funzionava in memoria, ma token.json
+  // restava morto e al riavvio successivo toccava riautorizzare da capo.
+  persistTokensOnRefresh(client);
   return client;
 }
